@@ -43,7 +43,11 @@ func (this *HybridBinarizer) GetBlackMatrix() (*BitMatrix, error) {
 			}
 			blackPoints := this.calculateBlackPoints(luminances, subWidth, subHeight, width, height)
 
-			newMatrix, _ := NewBitMatrix(width, height)
+			newMatrix, err := NewBitMatrix(width, height)
+			if err != nil {
+				this.matrixErr = err
+				return
+			}
 			this.calculateThresholdForBlock(luminances, subWidth, subHeight, width, height, blackPoints, newMatrix)
 			this.matrix = newMatrix
 		} else {
