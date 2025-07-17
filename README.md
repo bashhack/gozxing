@@ -111,3 +111,23 @@ func main() {
 	_ = png.Encode(file, img)
 }
 ```
+
+## Thread Safety
+
+Starting from version v0.1.2, BinaryBitmap and HybridBinarizer are thread-safe for concurrent access. Multiple goroutines can safely call GetBlackMatrix() on the same instance without external synchronization. The matrix is computed exactly once using sync.Once, ensuring both thread safety and optimal performance.
+
+```go
+// Safe for concurrent use
+bmp, _ := gozxing.NewBinaryBitmapFromImage(img)
+
+var wg sync.WaitGroup
+for i := 0; i < 10; i++ {
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        matrix, _ := bmp.GetBlackMatrix()
+        // Use matrix safely
+    }()
+}
+wg.Wait()
+```
