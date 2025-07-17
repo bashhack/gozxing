@@ -114,20 +114,109 @@ func main() {
 
 ## Thread Safety
 
-Starting from version v0.1.2, BinaryBitmap and HybridBinarizer are thread-safe for concurrent access. Multiple goroutines can safely call GetBlackMatrix() on the same instance without external synchronization. The matrix is computed exactly once using sync.Once, ensuring both thread safety and optimal performance.
+Starting from version v0.1.2, BinaryBitmap and HybridBinarizer are thread-safe for concurrent access. Multiple goroutines can safely call GetBlackMatrix() on the same instance without external synchronization.
+
+### Why This Matters
+
+Creating a BinaryBitmap from an image can be computationally significant. For high-performance services, caching these preprocessed bitmaps can offer tangible benefits.
+
+### Performance Benchmarks
+
+The following benchmark demonstrates why caching BinaryBitmap instances is valuable:
 
 ```go
-// Safe for concurrent use
-bmp, _ := gozxing.NewBinaryBitmapFromImage(img)
-
-var wg sync.WaitGroup
-for i := 0; i < 10; i++ {
-    wg.Add(1)
-    go func() {
-        defer wg.Done()
-        matrix, _ := bmp.GetBlackMatrix()
-        // Use matrix safely
-    }()
+func BenchmarkCachingImpact(b *testing.B) {
+    // Generate a 400x400 QR code
+    key, _ := totp.Generate(totp.GenerateOpts{
+        Issuer:      "BenchmarkApp",
+        AccountName: "bench@example.com",
+    })
+    img, _ := key.Image(400, 400)
+    
+    b.Run("WithoutCaching", func(b *testing.B) {
+        reader := qrcode.NewQRCodeReader()
+        b.ResetTimer()
+        for i := 0; i < b.N; i++ {
+            // Create new BinaryBitmap each time (expensive!)
+            bmp, _ := gozxing.NewBinaryBitmapFromImage(img)
+            _, _ = reader.Decode(bmp, nil)
+        }
+    })
+    
+    b.Run("WithCaching", func(b *testing.B) {
+        // Create BinaryBitmap once and reuse
+        bmp, _ := gozxing.NewBinaryBitmapFromImage(img)
+        reader := qrcode.NewQRCodeReader()
+        b.ResetTimer()
+        for i := 0; i < b.N; i++ {
+            // Reuse the same BinaryBitmap (fast!)
+            _, _ = reader.Decode(bmp, nil)
+        }
+    })
 }
-wg.Wait()
+```
+
+Results on Apple M1 Ultra:
+```
+BenchmarkCachingImpact/WithoutCaching-20     498    2392097 ns/op
+BenchmarkCachingImpact/WithCaching-20       5311     188575 ns/op
+```
+
+This shows a **12.7x performance improvement** when caching BinaryBitmap instances.
+
+For a pseudocode example of how you might leverage the added thread-safety of `gozxing`'s BinaryBitmap now:
+
+```go
+import (
+    "bytes"
+    "crypto/sha256"
+    "encoding/hex"
+    "image/jpeg"
+    "sync"
+    
+    "github.com/makiuchi-d/gozxing"
+    "github.com/makiuchi-d/gozxing/qrcode"
+)
+
+type QRResult struct {
+    Text string
+}
+
+// High-performance QR service that caches preprocessed images
+type QRService struct {
+    cache sync.Map // image_hash -> *gozxing.BinaryBitmap
+}
+
+// ProcessQR handles QR detection for uploaded images.
+// Without caching: Each request creates a new BinaryBitmap (1.7ms overhead)
+// With caching: Reuse BinaryBitmap for duplicate images (12x faster)
+func (s *QRService) ProcessQR(imageData []byte) (*QRResult, error) {
+    hash := sha256.Sum256(imageData)
+    hashStr := hex.EncodeToString(hash[:])
+    
+    // Check if we've already preprocessed this image
+    if cached, ok := s.cache.Load(hashStr); ok {
+        // Multiple goroutines may decode the same cached bitmap
+        // This is now safe with v0.1.2+
+        return s.decodeQR(cached.(*gozxing.BinaryBitmap))
+    }
+    
+    // Preprocess new image (expensive: ~1.8ms for 400x400)
+    img, _ := jpeg.Decode(bytes.NewReader(imageData))
+    bmp, _ := gozxing.NewBinaryBitmapFromImage(img)
+    
+    // Cache for future requests
+    s.cache.Store(hashStr, bmp)
+    
+    return s.decodeQR(bmp)
+}
+
+func (s *QRService) decodeQR(bmp *gozxing.BinaryBitmap) (*QRResult, error) {
+    reader := qrcode.NewQRCodeReader()
+    result, err := reader.Decode(bmp, nil) // Safe for concurrent use
+    if err != nil {
+        return nil, err
+    }
+    return &QRResult{Text: result.GetText()}, nil
+}
 ```
