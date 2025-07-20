@@ -1,5 +1,7 @@
 package gozxing
 
+import "sync"
+
 const (
 	BLOCK_SIZE_POWER  = 3
 	BLOCK_SIZE        = 1 << BLOCK_SIZE_POWER // ...0100...00
@@ -10,47 +12,55 @@ const (
 
 type HybridBinarizer struct {
 	*GlobalHistogramBinarizer
-	matrix *BitMatrix
+	matrix    *BitMatrix
+	once      sync.Once
+	matrixErr error
 }
 
 func NewHybridBinarizer(source LuminanceSource) Binarizer {
 	return &HybridBinarizer{
-		NewGlobalHistgramBinarizer(source).(*GlobalHistogramBinarizer),
-		nil,
+		GlobalHistogramBinarizer: NewGlobalHistgramBinarizer(source).(*GlobalHistogramBinarizer),
+		matrix:                   nil,
+		once:                     sync.Once{},
+		matrixErr:                nil,
 	}
 }
 
 func (this *HybridBinarizer) GetBlackMatrix() (*BitMatrix, error) {
-	if this.matrix != nil {
-		return this.matrix, nil
-	}
-	source := this.GetLuminanceSource()
-	width := source.GetWidth()
-	height := source.GetHeight()
-	if width >= MINIMUM_DIMENSION && height >= MINIMUM_DIMENSION {
-		luminances := source.GetMatrix()
-		subWidth := width >> BLOCK_SIZE_POWER
-		if (width & BLOCK_SIZE_MASK) != 0 {
-			subWidth++
-		}
-		subHeight := height >> BLOCK_SIZE_POWER
-		if (height & BLOCK_SIZE_MASK) != 0 {
-			subHeight++
-		}
-		blackPoints := this.calculateBlackPoints(luminances, subWidth, subHeight, width, height)
+	this.once.Do(func() {
+		source := this.GetLuminanceSource()
+		width := source.GetWidth()
+		height := source.GetHeight()
+		if width >= MINIMUM_DIMENSION && height >= MINIMUM_DIMENSION {
+			luminances := source.GetMatrix()
+			subWidth := width >> BLOCK_SIZE_POWER
+			if (width & BLOCK_SIZE_MASK) != 0 {
+				subWidth++
+			}
+			subHeight := height >> BLOCK_SIZE_POWER
+			if (height & BLOCK_SIZE_MASK) != 0 {
+				subHeight++
+			}
+			blackPoints := this.calculateBlackPoints(luminances, subWidth, subHeight, width, height)
 
-		newMatrix, _ := NewBitMatrix(width, height)
-		this.calculateThresholdForBlock(luminances, subWidth, subHeight, width, height, blackPoints, newMatrix)
-		this.matrix = newMatrix
-	} else {
-		// If the image is too small, fall back to the global histogram approach.
-		newMatrix, e := this.GlobalHistogramBinarizer.GetBlackMatrix()
-		if e != nil {
-			return nil, e
+			newMatrix, err := NewBitMatrix(width, height)
+			if err != nil {
+				this.matrixErr = err
+				return
+			}
+			this.calculateThresholdForBlock(luminances, subWidth, subHeight, width, height, blackPoints, newMatrix)
+			this.matrix = newMatrix
+		} else {
+			// If the image is too small, fall back to the global histogram approach.
+			newMatrix, e := this.GlobalHistogramBinarizer.GetBlackMatrix()
+			if e != nil {
+				this.matrixErr = e
+				return
+			}
+			this.matrix = newMatrix
 		}
-		this.matrix = newMatrix
-	}
-	return this.matrix, nil
+	})
+	return this.matrix, this.matrixErr
 }
 
 func (this *HybridBinarizer) CreateBinarizer(source LuminanceSource) Binarizer {
