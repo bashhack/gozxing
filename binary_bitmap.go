@@ -1,19 +1,28 @@
 package gozxing
 
 import (
+	"sync"
+
 	errors "golang.org/x/xerrors"
 )
 
 type BinaryBitmap struct {
 	binarizer Binarizer
 	matrix    *BitMatrix
+	once      sync.Once
+	matrixErr error
 }
 
 func NewBinaryBitmap(binarizer Binarizer) (*BinaryBitmap, error) {
 	if binarizer == nil {
 		return nil, errors.New("IllegalArgumentException: Binarizer must be non-null")
 	}
-	return &BinaryBitmap{binarizer, nil}, nil
+	return &BinaryBitmap{
+		binarizer: binarizer,
+		matrix:    nil,
+		once:      sync.Once{},
+		matrixErr: nil,
+	}, nil
 }
 
 func (this *BinaryBitmap) GetWidth() int {
@@ -34,14 +43,10 @@ func (this *BinaryBitmap) GetBlackMatrix() (*BitMatrix, error) {
 	// 1. This work will never be done if the caller only installs 1D Reader objects, or if a
 	//    1D Reader finds a barcode before the 2D Readers run.
 	// 2. This work will only be done once even if the caller installs multiple 2D Readers.
-	if this.matrix == nil {
-		var e error
-		this.matrix, e = this.binarizer.GetBlackMatrix()
-		if e != nil {
-			return nil, e
-		}
-	}
-	return this.matrix, nil
+	this.once.Do(func() {
+		this.matrix, this.matrixErr = this.binarizer.GetBlackMatrix()
+	})
+	return this.matrix, this.matrixErr
 }
 
 func (this *BinaryBitmap) IsCropSupported() bool {
